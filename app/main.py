@@ -8,33 +8,22 @@ from sqlalchemy.orm import Session
 from app.core.database import engine, Base, SessionLocal
 from app.routers import auth, cars, subscriptions, admin, payments
 from app.core.config import settings
-
-# 👇 import your User model + password hashing
 from app.models import User
 from passlib.context import CryptContext
-
-# print(settings.DATABASE_URL)
 
 # ---------------- PASSWORD HASH ----------------
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def hash_password(password: str):
     return pwd_context.hash(password)
+# ----------------------------------------------
 
-
-# def hash_password(password: str):
-#     if len(password.encode("utf-8")) > 72:
-#         raise ValueError("Password max 72 bytes")
-#     return pwd_context.hash(password)
-# -----------------------------------------------
-
-# Media directory for uploads
 MEDIA_DIR = Path(__file__).parent.parent / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def create_admin_user():
     db: Session = SessionLocal()
-
     try:
         admin_email = settings.ADMIN_EMAIL
         admin_password = settings.ADMIN_PASSWORD
@@ -66,6 +55,7 @@ def create_admin_user():
     finally:
         db.close()
 
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Car Subscription Platform - FastAPI Backend")
 
@@ -81,8 +71,6 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5175",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
-
-            # 👉 ADD YOUR DEPLOYED FRONTEND HERE
             "https://your-frontend.onrender.com"
         ],
         allow_credentials=True,
@@ -91,7 +79,7 @@ def create_app() -> FastAPI:
     )
     # --------------------------------------
 
-    # Include routers
+    # Routers
     app.include_router(auth.router)
     app.include_router(cars.router)
     app.include_router(subscriptions.router)
@@ -102,51 +90,28 @@ def create_app() -> FastAPI:
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
     # ---------------- STARTUP ----------------
-    # @app.on_event("startup")
-    # def on_startup():
-    #     # Create tables
-    #     Base.metadata.create_all(bind=engine)
+    @app.on_event("startup")
+    def on_startup():
+        try:
+            Base.metadata.create_all(bind=engine)
 
-    #     # Run migrations (safe alter)
-    #     if settings.DATABASE_URL.startswith("postgresql"):
-    #         with engine.begin() as conn:
-    #             conn.execute(text(
-    #                 "ALTER TABLE subscriptions "
-    #                 "ADD COLUMN IF NOT EXISTS needs_driver BOOLEAN NOT NULL DEFAULT FALSE"
-    #             ))
-    #             conn.execute(text(
-    #                 "ALTER TABLE subscriptions "
-    #                 "ADD COLUMN IF NOT EXISTS driver_service_details TEXT"
-    #             ))
+            if settings.DATABASE_URL.startswith("postgresql"):
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE subscriptions "
+                        "ADD COLUMN IF NOT EXISTS needs_driver BOOLEAN NOT NULL DEFAULT FALSE"
+                    ))
+                    conn.execute(text(
+                        "ALTER TABLE subscriptions "
+                        "ADD COLUMN IF NOT EXISTS driver_service_details TEXT"
+                    ))
 
-    #     # ✅ CREATE ADMIN USER
-    #     create_admin_user()
+            create_admin_user()
 
-@app.on_event("startup")
-def on_startup():
-    try:
-        Base.metadata.create_all(bind=engine)
-
-        if settings.DATABASE_URL.startswith("postgresql"):
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE subscriptions "
-                    "ADD COLUMN IF NOT EXISTS needs_driver BOOLEAN NOT NULL DEFAULT FALSE"
-                ))
-                conn.execute(text(
-                    "ALTER TABLE subscriptions "
-                    "ADD COLUMN IF NOT EXISTS driver_service_details TEXT"
-                ))
-
-        create_admin_user()
-
-    except Exception as e:
-        print("❌ Startup error:", e)
-
-    # ----------------------------------------
+        except Exception as e:
+            print("❌ Startup error:", e)
 
     return app
 
 
-# Create app instance
 app = create_app()
