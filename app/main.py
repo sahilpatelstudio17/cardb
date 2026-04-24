@@ -10,7 +10,7 @@ from app.routers import auth, cars, subscriptions, admin, payments
 from app.core.config import settings
 
 # 👇 import your User model + password hashing
-from app.models.user import User
+from app.models import User
 from passlib.context import CryptContext
 
 print(settings.DATABASE_URL)
