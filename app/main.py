@@ -18,14 +18,14 @@ print(settings.DATABASE_URL)
 # ---------------- PASSWORD HASH ----------------
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-# def hash_password(password: str):
-#     return pwd_context.hash(password)
-
-
 def hash_password(password: str):
-    if len(password.encode("utf-8")) > 72:
-        raise ValueError("Password max 72 bytes")
     return pwd_context.hash(password)
+
+
+# def hash_password(password: str):
+#     if len(password.encode("utf-8")) > 72:
+#         raise ValueError("Password max 72 bytes")
+#     return pwd_context.hash(password)
 # -----------------------------------------------
 
 # Media directory for uploads
