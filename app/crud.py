@@ -6,7 +6,7 @@ from app import models, schemas
 from app.core.security import create_access_token
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
 def get_password_hash(password: str) -> str:
