@@ -194,38 +194,7 @@ def create_swap_request(req: schemas.SwapRequest, db: Session = Depends(get_db_d
     if requested_from_car_id == req.to_car_id:
         raise HTTPException(status_code=400, detail="Source and target cars cannot be the same")
 
-    # Build active swappable cars for this user.
-    active_car_ids = set()
-    if subscription.car_id:
-        active_car_ids.add(subscription.car_id)
-
-    approved_bookings = db.query(models.Booking).filter(
-        models.Booking.user_id == current_user.id,
-        models.Booking.status == "approved"
-    ).all()
-    for booking in approved_bookings:
-        if booking.car_id:
-            active_car_ids.add(booking.car_id)
-
-    user_subscriptions = db.query(models.Subscription).filter(
-        models.Subscription.user_id == current_user.id
-    ).all()
-    user_subscription_ids = [s.id for s in user_subscriptions]
-
-    if user_subscription_ids:
-        approved_swaps = db.query(models.SwapHistory).filter(
-            models.SwapHistory.subscription_id.in_(user_subscription_ids),
-            models.SwapHistory.status == "approved"
-        ).all()
-
-        swapped_from_ids = set()
-        for swap_item in approved_swaps:
-            if swap_item.to_car_id:
-                active_car_ids.add(swap_item.to_car_id)
-            if swap_item.from_car_id:
-                swapped_from_ids.add(swap_item.from_car_id)
-
-        active_car_ids = active_car_ids - swapped_from_ids
+    active_car_ids = set(crud.get_active_user_car_ids(db, current_user.id))
 
     if requested_from_car_id not in active_car_ids:
         raise HTTPException(status_code=400, detail="Selected return car is not active for your account")
@@ -269,3 +238,77 @@ def get_swap_history(db: Session = Depends(get_db_dep), current_user: models.Use
     ).order_by(models.SwapHistory.timestamp.desc()).all()
     
     return swaps
+
+
+# Return Car endpoints
+@router.post("/return-request", response_model=schemas.ReturnRequestOut)
+def create_return_request(req: schemas.ReturnRequestCreate, db: Session = Depends(get_db_dep), current_user: models.User = Depends(get_current_user)):
+    """Create a return request for current subscription"""
+    # Check if subscription exists and belongs to user
+    subscription = db.query(models.Subscription).filter(
+        models.Subscription.id == req.subscription_id,
+        models.Subscription.user_id == current_user.id,
+        models.Subscription.active == True
+    ).first()
+    
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Active subscription not found")
+    
+    # Check if car exists
+    car = db.query(models.Car).filter(models.Car.id == req.car_id).first()
+    if not car:
+        raise HTTPException(status_code=404, detail="Car not found")
+
+    active_car_ids = set(crud.get_active_user_car_ids(db, current_user.id, include_pending_returns=False))
+    if req.car_id not in active_car_ids:
+        raise HTTPException(status_code=400, detail="This car is not active for your subscription")
+    
+    # Check if there's already a pending return request
+    existing = db.query(models.ReturnRequest).filter(
+        models.ReturnRequest.subscription_id == req.subscription_id,
+        models.ReturnRequest.status == "pending"
+    ).first()
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="You already have a pending return request")
+    
+    # Create return request
+    return_request = models.ReturnRequest(
+        user_id=current_user.id,
+        subscription_id=req.subscription_id,
+        car_id=req.car_id,
+        reason=req.reason,
+        status="pending"
+    )
+    db.add(return_request)
+    db.commit()
+    db.refresh(return_request)
+    return return_request
+
+
+@router.get("/my-return-requests", response_model=List[schemas.ReturnRequestOut])
+def get_user_return_requests(db: Session = Depends(get_db_dep), current_user: models.User = Depends(get_current_user)):
+    """Get all return requests for current user"""
+    return_requests = db.query(models.ReturnRequest).filter(
+        models.ReturnRequest.user_id == current_user.id
+    ).order_by(models.ReturnRequest.created_at.desc()).all()
+    return return_requests
+
+
+@router.delete("/return-request/{return_id}")
+def cancel_return_request(return_id: int, db: Session = Depends(get_db_dep), current_user: models.User = Depends(get_current_user)):
+    """Cancel a pending return request"""
+    return_request = db.query(models.ReturnRequest).filter(
+        models.ReturnRequest.id == return_id,
+        models.ReturnRequest.user_id == current_user.id
+    ).first()
+    
+    if not return_request:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    
+    if return_request.status != "pending":
+        raise HTTPException(status_code=400, detail="Can only cancel pending return requests")
+    
+    db.delete(return_request)
+    db.commit()
+    return {"detail": "Return request cancelled"}

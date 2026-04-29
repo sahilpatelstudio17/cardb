@@ -1,12 +1,13 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
+from typing import Optional
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from app import models, schemas
 from app.core.security import create_access_token
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def get_password_hash(password: str) -> str:
@@ -52,6 +53,157 @@ def get_available_cars(db: Session):
 def get_car(db: Session, car_id: int):
     """Get a single car by ID"""
     return db.query(models.Car).filter(models.Car.id == car_id).first()
+
+
+def get_active_subscription_car_ids(
+    db: Session,
+    subscription: models.Subscription,
+    include_pending_returns: bool = True,
+    exclude_return_request_id: Optional[int] = None,
+):
+    """Return active car ids for a subscription after swaps/returns are applied."""
+    if not subscription:
+        return []
+
+    car_timestamps = {}
+
+    def track_car(car_id: Optional[int], seen_at):
+        if not car_id:
+            return
+        normalized_seen_at = seen_at or subscription.start_date or datetime.utcnow()
+        previous_seen_at = car_timestamps.get(car_id)
+        if previous_seen_at is None or normalized_seen_at > previous_seen_at:
+            car_timestamps[car_id] = normalized_seen_at
+
+    track_car(subscription.car_id, subscription.start_date)
+
+    approved_bookings = db.query(models.Booking).filter(
+        models.Booking.user_id == subscription.user_id,
+        models.Booking.status == "approved",
+    ).all()
+    for booking in approved_bookings:
+        if subscription.start_date and booking.created_at and booking.created_at < subscription.start_date:
+            continue
+        track_car(booking.car_id, booking.created_at)
+
+    approved_swaps = db.query(models.SwapHistory).filter(
+        models.SwapHistory.subscription_id == subscription.id,
+        models.SwapHistory.status == "approved",
+    ).all()
+
+    swapped_from_ids = set()
+    for swap in approved_swaps:
+        track_car(swap.to_car_id, swap.timestamp)
+        if swap.from_car_id:
+            swapped_from_ids.add(swap.from_car_id)
+
+    return_statuses = ["approved"]
+    if include_pending_returns:
+        return_statuses.append("pending")
+
+    return_requests_query = db.query(models.ReturnRequest).filter(
+        models.ReturnRequest.subscription_id == subscription.id,
+        models.ReturnRequest.status.in_(return_statuses),
+    )
+    if exclude_return_request_id is not None:
+        return_requests_query = return_requests_query.filter(models.ReturnRequest.id != exclude_return_request_id)
+
+    latest_return_timestamps = {}
+    for return_request in return_requests_query.all():
+        if not return_request.car_id:
+            continue
+        return_seen_at = return_request.updated_at or return_request.created_at or datetime.utcnow()
+        previous_seen_at = latest_return_timestamps.get(return_request.car_id)
+        if previous_seen_at is None or return_seen_at > previous_seen_at:
+            latest_return_timestamps[return_request.car_id] = return_seen_at
+
+    active_car_entries = [
+        (car_id, seen_at)
+        for car_id, seen_at in car_timestamps.items()
+        if car_id not in swapped_from_ids and (
+            car_id not in latest_return_timestamps or seen_at > latest_return_timestamps[car_id]
+        )
+    ]
+    active_car_entries.sort(key=lambda item: item[1], reverse=True)
+    return [car_id for car_id, _ in active_car_entries]
+
+
+def get_active_user_car_ids(
+    db: Session,
+    user_id: int,
+    include_pending_returns: bool = True,
+    exclude_return_request_id: Optional[int] = None,
+):
+    """Return active car ids for a user across bookings/swaps/subscriptions."""
+    car_timestamps = {}
+
+    def track_car(car_id: Optional[int], seen_at):
+        if not car_id:
+            return
+        normalized_seen_at = seen_at or datetime.utcnow()
+        previous_seen_at = car_timestamps.get(car_id)
+        if previous_seen_at is None or normalized_seen_at > previous_seen_at:
+            car_timestamps[car_id] = normalized_seen_at
+
+    active_subscriptions = db.query(models.Subscription).filter(
+        models.Subscription.user_id == user_id,
+        models.Subscription.active == True,
+    ).all()
+    for subscription in active_subscriptions:
+        track_car(subscription.car_id, subscription.start_date)
+
+    approved_bookings = db.query(models.Booking).filter(
+        models.Booking.user_id == user_id,
+        models.Booking.status == "approved",
+    ).all()
+    for booking in approved_bookings:
+        track_car(booking.car_id, booking.created_at)
+
+    user_subscriptions = db.query(models.Subscription).filter(
+        models.Subscription.user_id == user_id
+    ).all()
+    user_subscription_ids = [subscription.id for subscription in user_subscriptions]
+
+    swapped_from_ids = set()
+    if user_subscription_ids:
+        approved_swaps = db.query(models.SwapHistory).filter(
+            models.SwapHistory.subscription_id.in_(user_subscription_ids),
+            models.SwapHistory.status == "approved",
+        ).all()
+        for swap in approved_swaps:
+            track_car(swap.to_car_id, swap.timestamp)
+            if swap.from_car_id:
+                swapped_from_ids.add(swap.from_car_id)
+
+    return_statuses = ["approved"]
+    if include_pending_returns:
+        return_statuses.append("pending")
+
+    return_requests_query = db.query(models.ReturnRequest).filter(
+        models.ReturnRequest.user_id == user_id,
+        models.ReturnRequest.status.in_(return_statuses),
+    )
+    if exclude_return_request_id is not None:
+        return_requests_query = return_requests_query.filter(models.ReturnRequest.id != exclude_return_request_id)
+
+    latest_return_timestamps = {}
+    for return_request in return_requests_query.all():
+        if not return_request.car_id:
+            continue
+        return_seen_at = return_request.updated_at or return_request.created_at or datetime.utcnow()
+        previous_seen_at = latest_return_timestamps.get(return_request.car_id)
+        if previous_seen_at is None or return_seen_at > previous_seen_at:
+            latest_return_timestamps[return_request.car_id] = return_seen_at
+
+    active_car_entries = [
+        (car_id, seen_at)
+        for car_id, seen_at in car_timestamps.items()
+        if car_id not in swapped_from_ids and (
+            car_id not in latest_return_timestamps or seen_at > latest_return_timestamps[car_id]
+        )
+    ]
+    active_car_entries.sort(key=lambda item: item[1], reverse=True)
+    return [car_id for car_id, _ in active_car_entries]
 
 
 def create_car(db: Session, car_in: schemas.CarCreate):

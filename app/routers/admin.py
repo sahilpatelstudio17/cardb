@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime
 import os
 import uuid
 from pathlib import Path
@@ -389,6 +390,106 @@ def admin_reject_swap(swap_id: int, approval: schemas.BookingApproval = None, db
     return {"detail": "Swap request rejected"}
 
 
+# ============== RETURN REQUEST MANAGEMENT ==============
+
+@router.get("/return-requests")
+def admin_list_return_requests(status: str = None, db: Session = Depends(get_db_dep), admin: models.User = Depends(get_current_admin)):
+    """List all return requests (admin only)"""
+    query = db.query(models.ReturnRequest)
+    if status:
+        query = query.filter(models.ReturnRequest.status == status)
+    
+    return_requests = query.order_by(models.ReturnRequest.created_at.desc()).all()
+    result = []
+    for ret_req in return_requests:
+        sub = db.query(models.Subscription).filter(models.Subscription.id == ret_req.subscription_id).first()
+        car = ret_req.car or (sub.car if sub else None)
+        result.append({
+            "id": ret_req.id,
+            "subscription_id": ret_req.subscription_id,
+            "user": {"id": ret_req.user.id, "email": ret_req.user.email, "full_name": ret_req.user.full_name} if ret_req.user else None,
+            "car": {"id": car.id, "brand": car.brand, "name": car.name, "image": car.image, "category": car.category} if car else None,
+            "status": ret_req.status,
+            "reason": ret_req.reason,
+            "admin_note": ret_req.admin_note,
+            "created_at": ret_req.created_at,
+            "updated_at": ret_req.updated_at
+        })
+    return result
+
+
+@router.post("/return-requests/{return_id}/approve")
+def admin_approve_return_request(return_id: int, approval: schemas.ReturnRequestApproval = None, db: Session = Depends(get_db_dep), admin: models.User = Depends(get_current_admin)):
+    """Approve a return request (admin only). Remove only the returned car when others remain."""
+    return_request = db.query(models.ReturnRequest).filter(models.ReturnRequest.id == return_id).first()
+    if not return_request:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    
+    if return_request.status != "pending":
+        raise HTTPException(status_code=400, detail="Return request is not pending")
+    
+    # Get subscription
+    subscription = db.query(models.Subscription).filter(models.Subscription.id == return_request.subscription_id).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    # Release the car being returned
+    car_id_to_release = return_request.car_id or subscription.car_id
+    if car_id_to_release:
+        car = db.query(models.Car).filter(models.Car.id == car_id_to_release).first()
+        if car:
+            car.available = True
+
+    # Update return request status
+    return_request.status = "approved"
+    if approval and approval.admin_note:
+        return_request.admin_note = approval.admin_note
+
+    booking_note = approval.admin_note if approval and approval.admin_note else "Car returned by user"
+    returned_bookings = db.query(models.Booking).filter(
+        models.Booking.user_id == return_request.user_id,
+        models.Booking.car_id == car_id_to_release,
+        models.Booking.status == "approved"
+    ).all()
+    for booking in returned_bookings:
+        booking.status = "returned"
+        booking.admin_note = booking_note
+
+    remaining_active_car_ids = crud.get_active_user_car_ids(
+        db,
+        return_request.user_id,
+    )
+
+    if subscription.car_id == car_id_to_release:
+        if remaining_active_car_ids:
+            subscription.car_id = remaining_active_car_ids[0]
+        else:
+            subscription.car_id = None
+            subscription.active = False
+            subscription.end_date = datetime.utcnow()
+
+    db.commit()
+    return {"detail": "Return request approved successfully"}
+
+
+@router.post("/return-requests/{return_id}/reject")
+def admin_reject_return_request(return_id: int, approval: schemas.ReturnRequestApproval = None, db: Session = Depends(get_db_dep), admin: models.User = Depends(get_current_admin)):
+    """Reject a return request (admin only)"""
+    return_request = db.query(models.ReturnRequest).filter(models.ReturnRequest.id == return_id).first()
+    if not return_request:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    
+    if return_request.status != "pending":
+        raise HTTPException(status_code=400, detail="Return request is not pending")
+    
+    return_request.status = "rejected"
+    if approval and approval.admin_note:
+        return_request.admin_note = approval.admin_note
+    
+    db.commit()
+    return {"detail": "Return request rejected"}
+
+
 # ============== CONTACT MESSAGES ==============
 
 @router.get("/contacts", response_model=List[schemas.ContactOut])
@@ -471,6 +572,7 @@ def admin_get_stats(db: Session = Depends(get_db_dep), admin: models.User = Depe
     active_subscriptions = db.query(models.Subscription).filter(models.Subscription.active == True).count()
     pending_bookings = db.query(models.Booking).filter(models.Booking.status == "pending").count()
     pending_swaps = db.query(models.SwapHistory).filter(models.SwapHistory.status == "pending").count()
+    pending_returns = db.query(models.ReturnRequest).filter(models.ReturnRequest.status == "pending").count()
     total_plans = db.query(models.SubscriptionPlan).count()
     unread_contacts = db.query(models.ContactMessage).filter(models.ContactMessage.read == False).count()
     
@@ -481,6 +583,7 @@ def admin_get_stats(db: Session = Depends(get_db_dep), admin: models.User = Depe
         "active_subscriptions": active_subscriptions,
         "pending_bookings": pending_bookings,
         "pending_swaps": pending_swaps,
+        "pending_returns": pending_returns,
         "total_plans": total_plans,
         "unread_contacts": unread_contacts
     }

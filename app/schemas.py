@@ -192,3 +192,47 @@ class RazorpayVerifyAndActivateResponse(BaseModel):
     detail: str
     subscription_id: int
     booking_ids: List[int]
+
+
+class RazorpayCreateRenewalOrderRequest(BaseModel):
+    plan_id: int
+
+
+class RazorpayVerifyRenewalRequest(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
+    plan_id: int
+
+
+class RazorpayVerifyRenewalResponse(BaseModel):
+    detail: str
+    subscription_id: int
+    end_date: datetime
+
+
+class ReturnRequestCreate(BaseModel):
+    subscription_id: int
+    car_id: int
+    reason: Optional[str] = None
+
+
+class ReturnRequestOut(BaseModel):
+    id: int
+    user_id: int
+    subscription_id: int
+    car_id: Optional[int]
+    status: str
+    reason: Optional[str]
+    admin_note: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    car: Optional[CarOut] = None
+    user: Optional[UserOut] = None
+
+    class Config:
+        orm_mode = True
+
+
+class ReturnRequestApproval(BaseModel):
+    admin_note: Optional[str] = None

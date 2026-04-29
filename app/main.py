@@ -1,118 +1,143 @@
+# from fastapi import FastAPI
+# from fastapi.middleware.cors import CORSMiddleware
+# from app.core.database import engine, Base
+# from app.routers import auth, cars, subscriptions, admin
+
+# from app.core.config import settings
+# print(settings.DATABASE_URL)
+
+# def create_app() -> FastAPI:
+#     app = FastAPI(title="Car Subscription Platform - FastAPI Backend")
+
+#     # CORS middleware
+#     app.add_middleware(
+#         CORSMiddleware,
+#         allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"],
+#         allow_credentials=True,
+#         allow_methods=["*"],
+#         allow_headers=["*"],
+#     )
+
+#     # include routers
+#     app.include_router(auth.router)
+#     app.include_router(cars.router)
+#     app.include_router(subscriptions.router)
+#     app.include_router(admin.router)
+
+#     @app.on_event("startup")
+#     def on_startup():
+#         # create tables if they don't exist
+#         Base.metadata.create_all(bind=engine)
+
+#     return app
+
+
+# app = create_app()
+
+# from fastapi.middleware.cors import CORSMiddleware
+
+# origins = [
+#     "http://localhost:5173",
+# ]
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
-from app.core.database import engine, Base, SessionLocal
+from app.core.database import engine, Base
 from app.routers import auth, cars, subscriptions, admin, payments
 from app.core.config import settings
-from app.models import User
-from passlib.context import CryptContext
 
-# ---------------- PASSWORD HASH ----------------
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+print(settings.DATABASE_URL)
 
-def hash_password(password: str):
-    return pwd_context.hash(password)
-# ----------------------------------------------
-
+# Media directory for uploads
 MEDIA_DIR = Path(__file__).parent.parent / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def create_admin_user():
-    db: Session = SessionLocal()
-    try:
-        admin_email = settings.ADMIN_EMAIL
-        admin_password = settings.ADMIN_PASSWORD
+def sync_postgres_schema() -> None:
+    if not settings.DATABASE_URL.startswith("postgresql"):
+        return
 
-        if not admin_email or not admin_password:
-            print("⚠️ Admin credentials not set")
-            return
+    statements = [
+        (
+            "ALTER TABLE subscriptions "
+            "ADD COLUMN IF NOT EXISTS needs_driver BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+        (
+            "ALTER TABLE subscriptions "
+            "ADD COLUMN IF NOT EXISTS driver_service_details TEXT"
+        ),
+        (
+            "ALTER TABLE return_requests "
+            "ADD COLUMN IF NOT EXISTS car_id INTEGER"
+        ),
+        (
+            "ALTER TABLE return_requests "
+            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()"
+        ),
+        "UPDATE return_requests SET updated_at = created_at WHERE updated_at IS NULL",
+    ]
 
-        existing = db.query(User).filter(User.email == admin_email).first()
-
-        if existing:
-            print("ℹ️ Admin already exists")
-            return
-
-        admin_user = User(
-            email=admin_email,
-            hashed_password=hash_password(admin_password),
-            is_admin=True
-        )
-
-        db.add(admin_user)
-        db.commit()
-        print("✅ Admin user created")
-
-    except Exception as e:
-        print("❌ Admin creation failed:", e)
-        db.rollback()
-
-    finally:
-        db.close()
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Car Subscription Platform - FastAPI Backend")
 
     # ---------------- CORS ----------------
+    # Allow frontend origins during development
     app.add_middleware(
         CORSMiddleware,
-        # allow_origins=[
-        #     "http://localhost:5173",
-        #     "http://127.0.0.1:5173",
-        #     "http://localhost:5174",
-        #     "http://127.0.0.1:5174",
-        #     "http://localhost:5175",
-        #     "http://127.0.0.1:5175",
-        #     "http://localhost:3000",
-        #     "http://127.0.0.1:3000",
-        #     "https://your-frontend.onrender.com"
-        # ],
-        allow_origins=["https://cardf.onrender.com"],
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
+            "http://localhost:5175",
+            "http://127.0.0.1:5175",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://cardf.onrender.com",
+        ],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
     # --------------------------------------
 
-    # Routers
+    # Include routers
     app.include_router(auth.router)
     app.include_router(cars.router)
     app.include_router(subscriptions.router)
     app.include_router(payments.router)
     app.include_router(admin.router)
 
-    # Static files
+    # Mount static files for uploaded images
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
-    # ---------------- STARTUP ----------------
+    # Create DB tables on startup
     @app.on_event("startup")
     def on_startup():
-        try:
-            Base.metadata.create_all(bind=engine)
-
-            if settings.DATABASE_URL.startswith("postgresql"):
-                with engine.begin() as conn:
-                    conn.execute(text(
-                        "ALTER TABLE subscriptions "
-                        "ADD COLUMN IF NOT EXISTS needs_driver BOOLEAN NOT NULL DEFAULT FALSE"
-                    ))
-                    conn.execute(text(
-                        "ALTER TABLE subscriptions "
-                        "ADD COLUMN IF NOT EXISTS driver_service_details TEXT"
-                    ))
-
-            create_admin_user()
-
-        except Exception as e:
-            print("❌ Startup error:", e)
+        Base.metadata.create_all(bind=engine)
+        sync_postgres_schema()
 
     return app
 
 
+# Create app instance
 app = create_app()
+

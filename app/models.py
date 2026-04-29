@@ -44,6 +44,7 @@ class User(Base):
 
     subscriptions = relationship("Subscription", back_populates="user")
     bookings = relationship("Booking", back_populates="user")
+    return_requests = relationship("ReturnRequest", back_populates="user")
 
 
 class Car(Base):
@@ -92,6 +93,7 @@ class Subscription(Base):
     car = relationship("Car", back_populates="subscriptions")
     plan = relationship("SubscriptionPlan", back_populates="subscriptions")
     swaps = relationship("SwapHistory", back_populates="subscription")
+    return_requests = relationship("ReturnRequest", back_populates="subscription")
 
 
 class Booking(Base):
@@ -122,6 +124,23 @@ class SwapHistory(Base):
     admin_note = Column(Text, nullable=True)
 
     subscription = relationship("Subscription", back_populates="swaps")
+
+
+class ReturnRequest(Base):
+    __tablename__ = "return_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    car_id = Column(Integer, ForeignKey("cars.id", ondelete="SET NULL"))
+    status = Column(String(50), default="pending")  # pending, approved, rejected
+    reason = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = relationship("User", back_populates="return_requests")
+    subscription = relationship("Subscription", back_populates="return_requests")
+    car = relationship("Car", foreign_keys=[car_id])
 
 
 class ContactMessage(Base):
